@@ -6,7 +6,7 @@ const DataContext = createContext(null);
 export function DataProvider({ children }) {
   const [properties, setProperties] = useState([]);
   const [priceHistory, setPriceHistory] = useState({});
-  const [newsSignals, setNewsSignals] = useState({});
+  const [newsScores, setNewsScores] = useState({});
   const [articles, setArticles] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -27,6 +27,18 @@ export function DataProvider({ children }) {
             latitude: parseFloat(r.latitude),
             longitude: parseFloat(r.longitude),
             price: r.price ? parseFloat(r.price) : null,
+            building_size_sqm: parseFloat(r.building_size_sqm) || 0,
+            land_size_sqm: parseFloat(r.land_size_sqm) || 0,
+            bedrooms: parseFloat(r.bedrooms) || 0,
+            bathrooms: parseFloat(r.bathrooms) || 0,
+            mall_5km: parseInt(r.mall_5km) || 0,
+            school_5km: parseInt(r.school_5km) || 0,
+            school_2km: parseInt(r.school_2km) || 0,
+            hospital_5km: parseInt(r.hospital_5km) || 0,
+            hospital_2km: parseInt(r.hospital_2km) || 0,
+            transit_1km: parseInt(r.transit_1km) || 0,
+            transit_5km: parseInt(r.transit_5km) || 0,
+            park_5km: parseInt(r.park_5km) || 0,
           }));
         setProperties(parsed);
         checkDone();
@@ -55,42 +67,56 @@ export function DataProvider({ children }) {
       },
     });
 
-    Papa.parse("/news_signals.csv", {
+    Papa.parse("/news_scores.csv", {
       download: true,
       header: true,
       skipEmptyLines: true,
       complete: (result) => {
         const byRegion = {};
         result.data.forEach((row) => {
-          if (row.scope !== "combined" || !row.region_id) return;
+          if (!row.region_id) return;
           if (!byRegion[row.region_id]) byRegion[row.region_id] = [];
           byRegion[row.region_id].push({
-            date: row.period_start,
-            signal_strength: parseFloat(row.signal_strength) || 0,
-            avg_sentiment: parseFloat(row.avg_sentiment) || 0,
-            weighted_avg_sentiment: parseFloat(row.weighted_avg_sentiment) || 0,
+            date: row.month + "-01",
+            mean_impact: parseFloat(row.mean_impact) || 0,
+            sum_impact: parseFloat(row.sum_impact) || 0,
+            freq_sentiment_score: parseFloat(row.freq_sentiment_score) || 0,
             article_count: parseInt(row.article_count) || 0,
+            n_very_positive: parseInt(row.n_very_positive) || 0,
+            n_positive: parseInt(row.n_positive) || 0,
+            n_neutral: parseInt(row.n_neutral) || 0,
+            n_negative: parseInt(row.n_negative) || 0,
+            n_very_negative: parseInt(row.n_very_negative) || 0,
             dominant_category: row.dominant_category || "",
+            dominant_sentiment: row.dominant_sentiment || "",
           });
         });
-        setNewsSignals(byRegion);
+        Object.values(byRegion).forEach((entries) =>
+          entries.sort((a, b) => a.date.localeCompare(b.date))
+        );
+        console.log(`[DataContext] news_scores: ${result.data.length} rows, ${Object.keys(byRegion).length} regions`);
+        setNewsScores(byRegion);
         checkDone();
       },
+      error: (err) => { console.error("[DataContext] Failed to load news_scores.csv:", err); checkDone(); },
     });
 
-    Papa.parse("/articles.csv", {
+    Papa.parse("/articles_labeled.csv", {
       download: true,
       header: true,
       skipEmptyLines: true,
       complete: (result) => {
-        setArticles(result.data.filter((r) => r.article_id));
+        const filtered = result.data.filter((r) => r.article_id);
+        console.log(`[DataContext] articles: ${filtered.length} loaded`);
+        setArticles(filtered);
         checkDone();
       },
+      error: (err) => { console.error("[DataContext] Failed to load articles_labeled.csv:", err); checkDone(); },
     });
   }, []);
 
   return (
-    <DataContext.Provider value={{ properties, priceHistory, newsSignals, articles, loading }}>
+    <DataContext.Provider value={{ properties, priceHistory, newsScores, articles, loading }}>
       {children}
     </DataContext.Provider>
   );

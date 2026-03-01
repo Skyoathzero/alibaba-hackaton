@@ -40,95 +40,160 @@ function CustomTooltip({ active, payload }) {
       {data.price != null && (
         <div className="chart-tooltip-price">{formatTooltipPrice(data.price)}</div>
       )}
-      {data.predictedPrice != null && isForecast && (
-        <div className="chart-tooltip-predicted">Predicted: {formatTooltipPrice(data.predictedPrice)}</div>
-      )}
-      {data.sentiment != null && (
+      {isForecast && data.forecastQ50 != null && (
         <>
-          <div className="chart-tooltip-divider" />
-          <div className={`chart-tooltip-sentiment ${data.sentiment >= 0 ? "positive" : "negative"}`}>
-            Sentiment: {data.sentiment >= 0 ? "+" : ""}{data.sentiment.toFixed(3)}
-          </div>
-          {data.article_count > 0 && (
-            <div className="chart-tooltip-meta">
-              {data.article_count} articles · {CATEGORY_LABELS[data.dominant_category] || data.dominant_category}
+          <div className="chart-tooltip-predicted">Median: {formatTooltipPrice(data.forecastQ50)}</div>
+          {data.forecastQ05 != null && data.forecastQ95 != null && (
+            <div className="chart-tooltip-range">
+              Range: {formatTooltipPrice(data.forecastQ05)} — {formatTooltipPrice(data.forecastQ95)}
             </div>
           )}
+        </>
+      )}
+      {data.freqScore != null && data.article_count > 0 && (
+        <>
+          <div className="chart-tooltip-divider" />
+          <div className={`chart-tooltip-sentiment ${data.freqScore >= 0 ? "positive" : "negative"}`}>
+            News Score: {data.freqScore >= 0 ? "+" : ""}{data.freqScore.toFixed(2)}
+          </div>
+          <div className="chart-tooltip-meta">
+            {data.article_count} articles · {CATEGORY_LABELS[data.dominant_category] || data.dominant_category}
+          </div>
+          <div className="chart-tooltip-breakdown">
+            {data.n_very_positive > 0 && <span style={{ color: "#1B7A4E" }}>V+ {data.n_very_positive}</span>}
+            {data.n_positive > 0 && <span style={{ color: "#4ade80" }}>+ {data.n_positive}</span>}
+            {data.n_neutral > 0 && <span style={{ color: "#94a3b8" }}>= {data.n_neutral}</span>}
+            {data.n_negative > 0 && <span style={{ color: "#f59e0b" }}>- {data.n_negative}</span>}
+            {data.n_very_negative > 0 && <span style={{ color: "#B42318" }}>V- {data.n_very_negative}</span>}
+          </div>
         </>
       )}
     </div>
   );
 }
 
-function PredictionChart({ priceHistory, sentimentData, predictedGrowthPct }) {
+function PredictionChart({ priceHistory, newsScoreData, predictedGrowthPct, quantiles }) {
   if (!priceHistory || priceHistory.length === 0) return null;
 
-  const sentimentMap = {};
-  if (sentimentData) {
-    sentimentData.forEach((s) => { sentimentMap[s.date] = s; });
+  const scoreMap = {};
+  if (newsScoreData && newsScoreData.length > 0) {
+    newsScoreData.forEach((s) => { scoreMap[s.date] = s; });
+    console.log(`[PredictionChart] ${newsScoreData.length} news scores, ${Object.keys(scoreMap).length} unique dates`);
+  } else {
+    console.warn("[PredictionChart] No newsScoreData received:", newsScoreData);
   }
 
   const historicalData = priceHistory.map((row) => {
-    const signal = sentimentMap[row.date];
+    const score = scoreMap[row.date];
     return {
       date: row.date,
       price: row.price,
-      predictedPrice: null,
-      sentiment: signal?.weighted_avg_sentiment ?? null,
-      article_count: signal?.article_count ?? 0,
-      dominant_category: signal?.dominant_category ?? "",
+      forecastQ50: null,
+      forecastBase: null,
+      forecastBand: null,
+      forecastQ05: null,
+      forecastQ95: null,
+      // Frequency-weighted sentiment score for the bar chart
+      freqScore: score?.freq_sentiment_score ?? null,
+      article_count: score?.article_count ?? 0,
+      n_very_positive: score?.n_very_positive ?? 0,
+      n_positive: score?.n_positive ?? 0,
+      n_neutral: score?.n_neutral ?? 0,
+      n_negative: score?.n_negative ?? 0,
+      n_very_negative: score?.n_very_negative ?? 0,
+      dominant_category: score?.dominant_category ?? "",
+      dominant_sentiment: score?.dominant_sentiment ?? "",
       _forecast: false,
     };
   });
 
   const lastEntry = historicalData[historicalData.length - 1];
-  const monthlyGrowth = (predictedGrowthPct || computeGrowthRate(priceHistory) * 100) / 12 / 100;
-  const forecastData = [];
   const lastDate = new Date(lastEntry.date);
+  const lastPrice = lastEntry.price;
 
+  // Use quantile data for distribution fan, or fall back to single prediction
+  const q05 = quantiles?.q05 ?? -0.10;
+  const q50 = quantiles?.q50 ?? (predictedGrowthPct || computeGrowthRate(priceHistory) * 100) / 100;
+  const q95 = quantiles?.q95 ?? 0.10;
+
+  const forecastData = [];
   for (let i = 1; i <= 12; i++) {
     const d = new Date(lastDate);
     d.setMonth(d.getMonth() + i);
     const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
-    const predictedPrice = Math.round(lastEntry.price * Math.pow(1 + monthlyGrowth, i));
+    const t = i / 12;
+    const pQ05 = Math.round(lastPrice * Math.exp(q05 * t));
+    const pQ50 = Math.round(lastPrice * Math.exp(q50 * t));
+    const pQ95 = Math.round(lastPrice * Math.exp(q95 * t));
+
     forecastData.push({
       date: dateStr,
       price: null,
-      predictedPrice,
-      sentiment: null,
+      forecastQ50: pQ50,
+      forecastBase: pQ05,
+      forecastBand: pQ95 - pQ05,
+      forecastQ05: pQ05,
+      forecastQ95: pQ95,
+      freqScore: null,
       article_count: 0,
+      n_very_positive: 0, n_positive: 0, n_neutral: 0, n_negative: 0, n_very_negative: 0,
       dominant_category: "",
+      dominant_sentiment: "",
       _forecast: true,
     });
   }
 
+  // Bridge: connect historical to forecast at the last data point
   const bridged = [...historicalData];
   bridged[bridged.length - 1] = {
     ...bridged[bridged.length - 1],
-    predictedPrice: bridged[bridged.length - 1].price,
+    forecastQ50: lastPrice,
+    forecastBase: lastPrice,
+    forecastBand: 0,
+    forecastQ05: lastPrice,
+    forecastQ95: lastPrice,
   };
 
   const chartData = [...bridged, ...forecastData];
 
   const ticks = chartData.filter((_, i) => i % 6 === 0).map((d) => d.date);
-  const allPrices = chartData.map((d) => d.price || d.predictedPrice).filter(Boolean);
+
+  // Price domain: include both historical and forecast range
+  const allPrices = chartData.flatMap((d) => [
+    d.price, d.forecastQ50, d.forecastQ05, d.forecastQ95,
+  ]).filter((v) => v != null && v > 0);
   const minPrice = Math.min(...allPrices);
   const maxPrice = Math.max(...allPrices);
   const padding = (maxPrice - minPrice) * 0.1;
-  const hasSentiment = historicalData.some((d) => d.sentiment !== null);
+
+  const hasNewsScores = historicalData.some((d) => d.freqScore !== null);
   const todayDate = lastEntry.date;
+
+  // Color function for frequency-weighted bars:
+  // Strong positive (very_positive heavy) = deep green
+  // Positive = light green
+  // Negative = orange
+  // Strong negative (very_negative heavy) = red
+  function getBarColor(entry) {
+    if (entry.freqScore == null) return "transparent";
+    if (entry.n_very_positive > 0 && entry.freqScore > 1.0) return "#1B7A4E";
+    if (entry.freqScore > 0) return "#4ade80";
+    if (entry.n_very_negative > 0 && entry.freqScore < -1.0) return "#B42318";
+    if (entry.freqScore < 0) return "#f59e0b";
+    return "#94a3b8";
+  }
 
   return (
     <div className="prediction-chart-container">
       <div className="prediction-chart-title">
-        Price History & ML Prediction (3yr + 1yr Forecast)
+        Price History & Quantile Forecast (3yr + 1yr Distribution)
       </div>
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={320}>
         <ComposedChart data={chartData} margin={{ top: 5, right: 12, left: 0, bottom: 5 }}>
           <defs>
             <linearGradient id="priceGradientNew" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2} />
-              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.02} />
+              <stop offset="5%" stopColor="#0D3B66" stopOpacity={0.2} />
+              <stop offset="95%" stopColor="#0D3B66" stopOpacity={0.02} />
             </linearGradient>
           </defs>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -141,11 +206,11 @@ function PredictionChart({ priceHistory, sentimentData, predictedGrowthPct }) {
             tickFormatter={formatPriceBillions}
             tick={{ fontSize: 10, fill: "#94a3b8" }} axisLine={false} tickLine={false} width={55}
           />
-          {hasSentiment && (
+          {hasNewsScores && (
             <YAxis
-              yAxisId="sentiment" orientation="right" domain={[-0.6, 0.6]}
+              yAxisId="sentiment" orientation="right" domain={[-3, 3]}
               tick={{ fontSize: 9, fill: "#cbd5e1" }} axisLine={false} tickLine={false} width={30}
-              tickFormatter={(v) => (v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1))}
+              tickFormatter={(v) => (v > 0 ? `+${v.toFixed(0)}` : v.toFixed(0))}
             />
           )}
           <Tooltip content={<CustomTooltip />} />
@@ -155,36 +220,52 @@ function PredictionChart({ priceHistory, sentimentData, predictedGrowthPct }) {
             strokeDasharray="4 4" label={{ value: "Today", position: "top", fill: "#94a3b8", fontSize: 10 }}
           />
 
-          {hasSentiment && (
-            <Bar yAxisId="sentiment" dataKey="sentiment" barSize={6} opacity={0.25}>
+          {hasNewsScores && (
+            <Bar yAxisId="sentiment" dataKey="freqScore" barSize={6} opacity={0.35}>
               {chartData.map((entry, index) => (
-                <Cell key={index} fill={entry.sentiment >= 0 ? "#10b981" : "#ef4444"} />
+                <Cell key={index} fill={getBarColor(entry)} />
               ))}
             </Bar>
           )}
 
+          {/* Historical price line */}
           <Area
-            yAxisId="price" type="monotone" dataKey="price" stroke="#3b82f6" strokeWidth={2}
+            yAxisId="price" type="monotone" dataKey="price" stroke="#0D3B66" strokeWidth={2}
             fill="url(#priceGradientNew)" dot={false}
-            activeDot={{ r: 4, fill: "#3b82f6", stroke: "#fff", strokeWidth: 2 }}
+            activeDot={{ r: 4, fill: "#0D3B66", stroke: "#fff", strokeWidth: 2 }}
           />
 
+          {/* Forecast distribution band: invisible base (q05) + visible band (q95-q05) */}
+          <Area
+            yAxisId="price" type="monotone" dataKey="forecastBase" stackId="forecast"
+            stroke="none" fill="transparent" dot={false} activeDot={false}
+          />
+          <Area
+            yAxisId="price" type="monotone" dataKey="forecastBand" stackId="forecast"
+            stroke="rgba(13,59,102,0.15)" strokeWidth={1} fill="rgba(13,59,102,0.08)"
+            dot={false} activeDot={false} strokeDasharray="3 3"
+          />
+
+          {/* Forecast median line (q50) */}
           <Line
-            yAxisId="price" type="monotone" dataKey="predictedPrice" stroke="#3b82f6"
+            yAxisId="price" type="monotone" dataKey="forecastQ50" stroke="#0D3B66"
             strokeWidth={2} strokeDasharray="6 4" dot={false}
-            activeDot={{ r: 4, fill: "#3b82f6", stroke: "#fff", strokeWidth: 2 }}
+            activeDot={{ r: 4, fill: "#0D3B66", stroke: "#fff", strokeWidth: 2 }}
           />
         </ComposedChart>
       </ResponsiveContainer>
 
       <div className="chart-legend">
         <span className="chart-legend-item">
-          <span className="chart-legend-line" style={{ background: "#3b82f6" }} /> Historical Price
+          <span className="chart-legend-line" style={{ background: "#0D3B66" }} /> Historical Price
         </span>
         <span className="chart-legend-item">
-          <span className="chart-legend-line dashed" style={{ background: "#3b82f6" }} /> ML Prediction
+          <span className="chart-legend-line dashed" style={{ background: "#0D3B66" }} /> Median Forecast (q50)
         </span>
-        {hasSentiment && (
+        <span className="chart-legend-item">
+          <span className="chart-legend-band" /> 90% Confidence (q5-q95)
+        </span>
+        {hasNewsScores && (
           <>
             <span className="chart-legend-item">
               <span className="chart-legend-bar positive" /> Positive News

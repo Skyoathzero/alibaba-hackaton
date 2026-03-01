@@ -1,12 +1,13 @@
 import { useState, useMemo } from "react";
 import { useData } from "../DataContext";
-import { computeRiskScore, computeGrowthRate, predictPrice } from "../utils/scoring";
+import { computeELScore, computeRegionStats, predictPrice } from "../utils/scoring";
+import { computeLoanAssessment } from "../utils/loanAssessment";
 import KpiBar from "../components/KpiBar";
 import FilterBar from "../components/FilterBar";
 import PropertyCard from "../components/PropertyCard";
 
 function DashboardPage({ apiKey, onOpenSettings }) {
-  const { properties, priceHistory, newsSignals } = useData();
+  const { properties, priceHistory, newsScores, articles } = useData();
 
   const [filter, setFilter] = useState({
     region: "All",
@@ -16,31 +17,68 @@ function DashboardPage({ apiKey, onOpenSettings }) {
     search: "",
   });
 
+  const [approvalStatuses, setApprovalStatuses] = useState({});
+  const [confirmTarget, setConfirmTarget] = useState(null);
+
+  const handleApprovalChange = (propertyId, status) => {
+    if (status === "confirm_needed") {
+      setConfirmTarget(propertyId);
+      return;
+    }
+    setApprovalStatuses((prev) => {
+      const next = { ...prev };
+      if (status === null) {
+        delete next[propertyId];
+      } else {
+        next[propertyId] = status;
+      }
+      return next;
+    });
+  };
+
+  const handleConfirmApprove = () => {
+    setApprovalStatuses((prev) => ({ ...prev, [confirmTarget]: "approved" }));
+    setConfirmTarget(null);
+  };
+
+  const regionStats = useMemo(
+    () => computeRegionStats(properties),
+    [properties]
+  );
+
   const enriched = useMemo(() => {
     return properties.map((p) => {
       const history = priceHistory[p.property_id] || [];
-      const signals = newsSignals[p.region] || [];
-      const growthRate = computeGrowthRate(history);
-      const score = computeRiskScore(p, history, signals, 0);
-      const prediction = predictPrice(p.price, growthRate, signals);
-      const recentSignals = signals.slice(-6);
-      const avgSentiment = recentSignals.length > 0
-        ? recentSignals.reduce((s, n) => s + n.weighted_avg_sentiment, 0) / recentSignals.length
+      const scores = newsScores[p.region] || [];
+
+      const elResult = computeELScore(p, history, scores, articles, regionStats);
+      const prediction = predictPrice(p.price, elResult.growthRate, scores);
+      const loan = computeLoanAssessment(p, elResult, null);
+
+      const recentScores = scores.slice(-6);
+      const avgImpact = recentScores.length > 0
+        ? recentScores.reduce((s, n) => s + n.mean_impact, 0) / recentScores.length
         : 0;
+
+      // Use loan-adjusted EL so scores reflect actual proposed loan risk
+      const effectiveEL = loan.elResult || elResult;
 
       return {
         ...p,
         _riskData: {
-          score,
-          growthRate,
+          score: effectiveEL.score,
+          growthRate: elResult.growthRate,
           growthPct: prediction.growthPct,
           predictedPrice: prediction.predicted,
           currentPrice: p.price || 0,
-          sentiment: avgSentiment,
+          sentiment: avgImpact,
+          elRate: effectiveEL.elRate,
         },
+        _elResult: effectiveEL,
+        _loan: loan,
       };
     }).sort((a, b) => (b._riskData.score || 0) - (a._riskData.score || 0));
-  }, [properties, priceHistory, newsSignals]);
+  }, [properties, priceHistory, newsScores, articles, regionStats]);
 
   const regions = useMemo(
     () => ["All", ...new Set(properties.map((d) => d.region).filter(Boolean))],
@@ -71,11 +109,11 @@ function DashboardPage({ apiKey, onOpenSettings }) {
     <div className="dashboard">
       <header className="dashboard-header">
         <div className="dashboard-header-left">
-          <h1>Property Valuation Dashboard</h1>
-          <p className="dashboard-subtitle">ML-Powered Loan Risk Assessment</p>
+          <h1>Property Collateral Dashboard</h1>
+          <p className="dashboard-subtitle">EL Model Risk Assessment</p>
         </div>
         <button className="settings-btn" onClick={onOpenSettings} title="API Key Settings">
-          \u2699
+          {"\u2699"}
         </button>
       </header>
 
@@ -89,17 +127,47 @@ function DashboardPage({ apiKey, onOpenSettings }) {
       />
 
       <div className="card-list">
+        <div className="card-list-header">
+          <span className="col-score">Score</span>
+          <span className="col-thumbnail"></span>
+          <span className="col-property">Property</span>
+          <span className="col-price">Valuation</span>
+          <span className="col-growth">Growth</span>
+          <span className="col-loan">Proposed Loan</span>
+          <span className="col-action">Action</span>
+          <span></span>
+        </div>
         {filtered.map((property) => (
           <PropertyCard
             key={property.property_id}
             property={property}
             apiKey={apiKey}
+            approvalStatus={approvalStatuses[property.property_id]}
+            onApprovalChange={handleApprovalChange}
           />
         ))}
         {filtered.length === 0 && (
           <div className="empty-state">No properties match your filters.</div>
         )}
       </div>
+
+      {confirmTarget && (
+        <div className="confirm-overlay" onClick={() => setConfirmTarget(null)}>
+          <div className="confirm-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="confirm-icon">!</div>
+            <h3>High Risk Property</h3>
+            <p>This property has a <strong>Decline</strong> recommendation due to high risk factors. Are you sure you want to approve this collateral loan?</p>
+            <div className="confirm-actions">
+              <button className="confirm-yes" onClick={handleConfirmApprove}>
+                Yes, Approve Anyway
+              </button>
+              <button className="confirm-no" onClick={() => setConfirmTarget(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -6,24 +6,36 @@ function KpiBar({ properties }) {
   const avgScore = total > 0
     ? Math.round(properties.reduce((sum, p) => sum + (p._riskData?.score || 0), 0) / total)
     : 0;
-  const avgGrowth = total > 0
-    ? (properties.reduce((sum, p) => sum + (p._riskData?.growthPct || 0), 0) / total).toFixed(1)
-    : "0.0";
-  const highRisk = properties.filter((p) => (p._riskData?.score || 0) < 40).length;
-  const highRiskPct = total > 0 ? ((highRisk / total) * 100).toFixed(0) : "0";
+  const avgEL = total > 0
+    ? properties.reduce((sum, p) => sum + (p._riskData?.elRate || 0), 0) / total
+    : 0;
+
+  const approvedCount = properties.filter((p) => p._loan?.decision === "RECOMMEND").length;
+  const conditionalCount = properties.filter((p) => p._loan?.decision === "DUE_DILIGENCE").length;
+  const declinedCount = properties.filter((p) => p._loan?.decision === "DECLINE").length;
+  const totalLoanValue = properties.reduce((sum, p) => sum + (p._loan?.recommendedLoan || 0), 0);
 
   const cards = [
     { label: "Total Properties", value: total, sub: "In Portfolio" },
     { label: "Portfolio Value", value: formatPriceShort(totalValue), sub: "Total Valuation" },
-    { label: "Avg Risk Score", value: `${avgScore}/100`, sub: avgScore >= 70 ? "Low Risk" : avgScore >= 40 ? "Medium" : "High Risk" },
-    { label: "Avg Growth", value: `+${avgGrowth}%/yr`, sub: "Predicted 1yr" },
-    { label: "High Risk", value: `${highRisk} (${highRiskPct}%)`, sub: "Needs Attention", alert: highRisk > 0 },
+    {
+      label: "Avg EL Rate",
+      value: `${(avgEL * 100).toFixed(2)}%`,
+      sub: `Score: ${avgScore}/100`,
+    },
+    { label: "Total Loan Value", value: formatPriceShort(totalLoanValue), sub: "Recommended" },
+    {
+      label: "Loan Decisions",
+      value: `${approvedCount} rec.`,
+      sub: `${conditionalCount} DD \u00B7 ${declinedCount} declined`,
+      accent: approvedCount > 0,
+    },
   ];
 
   return (
     <div className="kpi-bar">
       {cards.map((card) => (
-        <div key={card.label} className={`kpi-card${card.alert ? " kpi-alert" : ""}`}>
+        <div key={card.label} className={`kpi-card${card.alert ? " kpi-alert" : ""}${card.accent ? " kpi-accent" : ""}`}>
           <div className="kpi-value">{card.value}</div>
           <div className="kpi-label">{card.label}</div>
           <div className="kpi-sub">{card.sub}</div>
